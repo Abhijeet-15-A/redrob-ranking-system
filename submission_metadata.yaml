@@ -1,0 +1,4 @@
+team_name: "Abhi"
+track: "Data & AI Challenge : Intelligent Candidate Discovery"
+sandbox_url: "https://colab.research.google.com/drive/1kBBY_0wrG92z5OaJp32KcOJRP8Cg9Nvc?usp=sharing"
+methodology_short: "A hybrid lexical (BM25) and deep semantic (Bi-Encoder/Cross-Encoder) retrieval pipeline incorporating hard business-rule logic guardrails for candidate validation."
