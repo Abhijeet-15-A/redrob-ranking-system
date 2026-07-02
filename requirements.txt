@@ -1,0 +1,6 @@
+numpy
+torch>=2.0.0
+sentence-transformers
+rank-bm25
+pandas
+pyyaml
