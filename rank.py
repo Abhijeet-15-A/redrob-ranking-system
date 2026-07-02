@@ -33,6 +33,8 @@ PHRASE_SYNONYMS = {
     "production ml systems": ["mlops", "docker", "kubernetes", "ab testing", "drift"]
 }
 
+PREMIUM_BOOST_SKILLS = {"semantic search", "pinecone", "embeddings", "recommendation systems"}
+
 STRONG_VERBS = {"built", "deployed", "shipped", "owned", "scaled", "production", "migrated", "designed", "implemented", "optimized"}
 WEAK_VERBS = {"learning", "experimenting", "trying", "course", "tutorial", "certified"}
 PROJECT_KEYWORDS = {"retrieval", "ranking", "semantic search", "vector search", "recommendation", "embeddings", "rag"}
@@ -45,10 +47,8 @@ CODING_VERBS = re.compile(r'\b(built|deployed|shipped|implemented|coded|programm
 
 MANDATORY = {"python", "embeddings", "retrieval systems", "ranking systems"}
 
-
 TIER_1_CITIES = {"noida", "pune", "delhi ncr", "gurgaon", "mumbai", "hyderabad", "bangalore", "kolkata"}
 PREFERRED_HUBS = {"noida", "pune"}
-
 
 TARGET_PRODUCT_STARTUPS = {
     "zomato", "swiggy", "razorpay", "blinkit", "zepto", "ola", "uber", "flipkart", 
@@ -61,6 +61,35 @@ COMMON_BOILERPLATE_PHRASES = [
     "comfortable across the ml stack from feature engineering through deployment",
     "i've learned that most retrieval problems are actually evaluation problems in disguise"
 ]
+
+
+TEMPLATES = {
+    "penalized": [
+        "Assessment score adjusted based on core constraint violations. Candidate background does not fully align with the hands-on engineering focus required for this role.",
+        "Penalty applied due to experience structure mismatch. Technical assessment adjusted due to structural deviation from specific execution requirements.",
+        "Score reduced due to core constraint violation. Profile indicates misalignment with current role requirements and lacks hands-on execution focus."
+    ],
+    "tier_1": [ 
+        "Exceptional technical match demonstrating deep expertise across required AI and search domains. Elite profile with strong validation in core ML and dense vector alignment{skills_str}.",
+        "Top-tier profile featuring exceptional dense vector alignment and comprehensive mastery of required search and vector matching technologies{skills_str}.",
+        "Premium pedigree from a leading product-based company ({target_name}). Outstanding background in high-growth environments, bringing targeted engineering experience{skills_str}."
+    ],
+    "tier_2": [ 
+        "Solid search engineering profile demonstrating foundational alignment with the role's backend search and production requirements{skills_str}.",
+        "Strong backend fundamentals with valid model alignment. Competent engineering profile bringing relevant production-level experience{skills_str}.",
+        "Verified product-based company experience ({target_name}) demonstrating good capability mapping and strong technical evaluation results{skills_str}."
+    ],
+    "tier_3": [ 
+        "Meets core constraints with a satisfactory baseline alignment. Qualified candidate with baseline execution experience in search-focused engineering environments{skills_str}.",
+        "Foundational ML background demonstrating acceptable technical match. Meets core qualifications with practical experience in the required domains{skills_str}.",
+        "Qualified backend profile showing standard alignment. Brings solid baseline experience from a product-driven environment ({target_name}){skills_str}."
+    ],
+    "demerit_location": "Location falls outside primary hiring hubs, which may require remote work considerations.",
+    "demerit_relocation": "Candidate has indicated constraints regarding relocation to primary office hubs.",
+    "demerit_response": "Low responsiveness metrics indicate the candidate may require extended outreach efforts.",
+    "demerit_interview": "Historical assessment completion rates indicate potential pipeline drop-off risk.",
+    "demerit_passive": "Currently marked as not actively looking; requires a targeted sourcing approach."
+}
 
 
 def tokenize(text: str):
@@ -133,6 +162,69 @@ def calculate_behavioral_multiplier(candidate) -> float:
         
     return max(0.1, 1.0 - total_penalty)
 
+def build_reasoning_string(item, rank: int) -> str:
+    cand = item["candidate_data"]
+    cand_id = item.get("candidate_id", "default")
+    
+    rng = random.Random(cand_id)
+    profile = cand.get("profile", {})
+    signals = cand.get("redrob_signals", {})
+    history = cand.get("career_history", [])
+    
+    has_startup_pedigree = False
+    past_companies = []
+    
+    for job in history:
+        comp = normalize(job.get("company", ""))
+        past_companies.append(job.get("company", ""))
+        if any(startup in comp for startup in TARGET_PRODUCT_STARTUPS):
+            has_startup_pedigree = True
+
+    matched = item.get("matched_skills", [])
+    skills_str = f" (Verified: {', '.join(matched[:3])})" if matched else ""
+    ce_score = item.get("ce_score", "N/A")
+    
+    target_name = "product-based company"
+    if has_startup_pedigree:
+        raw_target = next((c for c in past_companies if any(s in normalize(c) for s in TARGET_PRODUCT_STARTUPS)), "premium product-based company")
+        target_name = raw_target.title()
+
+    if "PENALIZED" in str(ce_score):
+        template = rng.choice(TEMPLATES["penalized"])
+    elif rank <= 15:
+        template = rng.choice(TEMPLATES["tier_1"])
+    elif rank <= 50:
+        template = rng.choice(TEMPLATES["tier_2"])
+    else:
+        template = rng.choice(TEMPLATES["tier_3"])
+
+    merit = template.format(target_name=target_name, skills_str=skills_str)
+
+    demerits = []
+    loc = normalize(profile.get("location", ""))
+    is_hub = any(hub in loc for hub in PREFERRED_HUBS)
+    is_tier1 = any(city in loc for city in TIER_1_CITIES)
+    willing_relocate = signals.get("willing_to_relocate", False)
+    
+    if not is_hub and not is_tier1:
+        demerits.append(TEMPLATES["demerit_location"])
+    elif not is_hub and is_tier1 and not willing_relocate:
+        demerits.append(TEMPLATES["demerit_relocation"])
+        
+    if signals.get("recruiter_response_rate", 1.0) < 0.60:
+        demerits.append(TEMPLATES["demerit_response"])
+    if signals.get("interview_completion_rate", 1.0) < 0.70:
+        demerits.append(TEMPLATES["demerit_interview"])
+    if not signals.get("open_to_work_flag", True):
+        demerits.append(TEMPLATES["demerit_passive"])
+
+    if demerits and "PENALIZED" not in str(ce_score):
+        demerit_str = " ".join(demerits[:2])
+        return f"{merit} HR Notes: {demerit_str}"
+        
+    return merit
+
+
 def skill_score_verified(skills, text_blob):
     skill_set = set(skills)
     score = 0
@@ -144,7 +236,7 @@ def skill_score_verified(skills, text_blob):
         if term in skill_set:
             if verified(term, text_blob):
                 score += weight
-                matches.append(term)
+                if term not in matches: matches.append(term)
                 if term in MANDATORY:
                     mandatory_hits += 1
             else:
@@ -155,7 +247,7 @@ def skill_score_verified(skills, text_blob):
                 if syn in skill_set:
                     if verified(syn, text_blob):
                         score += weight * 0.8
-                        matches.append(syn)
+                        if syn not in matches: matches.append(syn)
                     else:
                         score += weight * 0.1
 
@@ -209,7 +301,11 @@ def step1_pipeline(candidates, jd_text, top_k=800):
         role_b = role_bonus(cand)
         bm25_score = (bm25_raw[idx] / max_bm25) * 30
 
-        final_score = (bm25_score * 1.2) + skill_score + (proj_score * 2.0) + role_b
+        # Apply specific +15 boost per premium skill matched
+        premium_hits = sum(1 for m in matches if m in PREMIUM_BOOST_SKILLS)
+        premium_boost = premium_hits * 15.0
+
+        final_score = (bm25_score * 1.2) + skill_score + (proj_score * 2.0) + role_b + premium_boost
         
         final_score *= calculate_location_multiplier(cand)
         final_score *= calculate_originality_multiplier(text_blob)
@@ -224,6 +320,7 @@ def step1_pipeline(candidates, jd_text, top_k=800):
 
     results.sort(key=lambda x: x["score"], reverse=True)
     return results[:top_k]
+
 
 def generate_candidate_chunks(candidate: dict):
     chunks = []
@@ -311,7 +408,6 @@ def step2_semantic_reranking(step1_results, job_query_or_emb, embedder):
     hybrid_results.sort(key=lambda x: x["hybrid_score"], reverse=True)
     return hybrid_results
 
-
 def step3_cross_encoder_rerank_with_guardrails(hybrid_candidates, ce_query, ce_model, top_k=250):
     print(f"Stage 3: Running Deep Cross-Encoder + Business Logic Guardrails on top {min(len(hybrid_candidates), top_k)} profiles...")
     pool = hybrid_candidates[:top_k]
@@ -347,7 +443,6 @@ def step3_cross_encoder_rerank_with_guardrails(hybrid_candidates, ce_query, ce_m
         full_text_blob = f"{candidate.get('profile', {}).get('headline', '')} {candidate.get('profile', {}).get('summary', '')} " + " ".join([role.get('description', '') for role in history_list]).lower()
         current_title = normalize(candidate.get("profile", {}).get("current_title", ""))
         
-        # Guardrails
         total_roles = len(history_list)
         if total_roles > 0:
             consulting_roles = sum(1 for role in history_list if CONSULTING_PATTERNS.search(role.get('company', '')))
@@ -379,164 +474,30 @@ def step3_cross_encoder_rerank_with_guardrails(hybrid_candidates, ce_query, ce_m
     pool.sort(key=lambda x: x["final_fused_score"], reverse=True)
     return pool
 
-
-TEMPLATES = {
-    "penalized": [
-        "Profile indicates misalignment with current role requirements. Assessment score adjusted based on core constraint criteria.",
-        "Experience structure diverges from target technical requirements. Score reflects role-specific screening constraints.",
-        "Candidate background does not fully align with the hands-on engineering focus required for this role.",
-        "Technical assessment adjusted due to structural mismatch with the specific execution requirements of the position.",
-        "Screening criteria indicates a deviation from the target profile; overall alignment score adjusted accordingly."
-    ],
-    "target_startup": [
-        "Strong product background from {target_name} with {exp} years of relevant experience and demonstrated technical execution{skills_str}.",
-        "Highly relevant experience from {target_name} demonstrating strong alignment with product engineering requirements ({exp} YOE){skills_str}.",
-        "Top talent profile featuring {exp} years of experience at {target_name} with verified core technical competencies{skills_str}.",
-        "Excellent background in high-growth environments ({target_name}), bringing {exp} years of targeted engineering experience{skills_str}.",
-        "Standout candidate with {exp} years of impactful tenure at {target_name} and strong technical validation{skills_str}."
-    ],
-    "high_score": [
-        "High alignment with core technical competencies in search, ranking, and dense vector frameworks ({exp} YOE).",
-        "Exceptional technical match demonstrating deep expertise across required AI and search domains ({exp} YOE).",
-        "Strong technical evaluation results highlighting advanced proficiency in core ML and search systems ({exp} YOE).",
-        "Premium engineering profile with proven capabilities in targeted deep-learning and ranking frameworks ({exp} YOE).",
-        "Highly qualified candidate showing comprehensive mastery of required search and vector matching technologies ({exp} YOE)."
-    ],
-    "standard": [
-        "Qualified backend search engineering profile with {exp} years of experience in production environments.",
-        "Solid technical background with {exp} years of applicable experience in backend and search engineering.",
-        "Demonstrates foundational alignment with the role's backend search and production requirements ({exp} YOE).",
-        "Competent engineering profile bringing {exp} years of relevant production-level experience.",
-        "Meets core qualifications with {exp} years of practical experience in search-focused engineering environments."
-    ],
-    "demerit_location": [
-        "Location falls outside primary hiring hubs, which may require remote work considerations.",
-        "Current geography is outside target markets, potentially impacting hybrid collaboration.",
-        "Candidate location does not align with preferred office hubs.",
-        "Geographic location may necessitate flexibility regarding standard onsite policies.",
-        "Based outside of core target regions for this role."
-    ],
-    "demerit_relocation": [
-        "Candidate has indicated constraints regarding relocation to primary office hubs.",
-        "Relocation preferences do not currently align with target office locations.",
-        "Profile indicates an unwillingness to relocate to preferred hiring zones.",
-        "Geographic constraints noted; candidate is not open to relocation.",
-        "Relocation flag is active, requiring review against current remote work policies."
-    ],
-    "demerit_response": [
-        "Recent engagement metrics suggest a passive job-seeking status.",
-        "Low response rates indicate the candidate may require extended outreach efforts.",
-        "Communication history suggests limited active engagement on the platform.",
-        "Passive engagement indicators suggest lower immediate responsiveness.",
-        "Candidate responsiveness metrics fall below standard active benchmarks."
-    ],
-    "demerit_interview": [
-        "Historical assessment completion rates indicate potential pipeline drop-off risk.",
-        "Past interview completion metrics suggest a higher risk of process attrition.",
-        "Platform history shows lower-than-average follow-through on technical assessments.",
-        "Engagement data indicates potential challenges with interview stage completion.",
-        "Historical process completion rates require careful candidate management."
-    ],
-    "demerit_passive": [
-        "Currently marked as not actively looking; requires a targeted sourcing approach.",
-        "Profile is set to passive; candidate will need specialized outreach.",
-        "Not actively on the market; requires strategic headhunting to engage.",
-        "Passive talent indicator active; standard recruiting pipelines may yield lower conversion.",
-        "Candidate is currently employed and not openly seeking new opportunities."
-    ]
-}
-
-def build_reasoning_string(item) -> str:
-    cand = item["candidate_data"]
-    cand_id = item.get("candidate_id", "default")
-    
-    rng = random.Random(cand_id)
-    
-    profile = cand.get("profile", {})
-    signals = cand.get("redrob_signals", {})
-    history = cand.get("career_history", [])
-    
-    exp = profile.get("years_of_experience", 0)
-    has_startup_pedigree = False
-    past_companies = []
-    
-    for job in history:
-        comp = normalize(job.get("company", ""))
-        past_companies.append(job.get("company", ""))
-        if any(startup in comp for startup in TARGET_PRODUCT_STARTUPS):
-            has_startup_pedigree = True
-
-    matched = item.get("matched_skills", [])
-    skills_str = f" ({', '.join(matched[:2])})" if matched else ""
-    
-    if "PENALIZED" in str(item.get("ce_score", "")):
-        merit = rng.choice(TEMPLATES["penalized"])
-    elif has_startup_pedigree:
-        target_name = next((c for c in past_companies if normalize(c) in TARGET_PRODUCT_STARTUPS), "a premium startup")
-        target_name = target_name.title()
-        template = rng.choice(TEMPLATES["target_startup"])
-        merit = template.format(target_name=target_name, exp=exp, skills_str=skills_str)
-    elif item.get("final_fused_score", 0) > 0.75:
-        template = rng.choice(TEMPLATES["high_score"])
-        merit = template.format(exp=exp)
-    else:
-        template = rng.choice(TEMPLATES["standard"])
-        merit = template.format(exp=exp)
-
-    demerits = []
-    loc = normalize(profile.get("location", ""))
-    is_hub = any(hub in loc for hub in PREFERRED_HUBS)
-    is_tier1 = any(city in loc for city in TIER_1_CITIES)
-    willing_relocate = signals.get("willing_to_relocate", False)
-    
-    if not is_hub and not is_tier1:
-        demerits.append(rng.choice(TEMPLATES["demerit_location"]))
-    elif not is_hub and is_tier1 and not willing_relocate:
-        demerits.append(rng.choice(TEMPLATES["demerit_relocation"]))
-        
-    resp_rate = signals.get("recruiter_response_rate", 1.0)
-    interview_rate = signals.get("interview_completion_rate", 1.0)
-    is_open = signals.get("open_to_work_flag", True)
-    
-    if resp_rate < 0.60:
-        demerits.append(rng.choice(TEMPLATES["demerit_response"]))
-    if interview_rate < 0.70:
-        demerits.append(rng.choice(TEMPLATES["demerit_interview"]))
-    if not is_open:
-        demerits.append(rng.choice(TEMPLATES["demerit_passive"]))
-
-    if demerits and "PENALIZED" not in str(item.get("ce_score", "")):
-        demerit_str = " ".join(demerits[:2])
-        return f"{merit} HR Notes: {demerit_str}"
-        
-    return merit
-
 def execute_ranking_pipeline(candidates_list_or_path, output_csv_path="final_redrob_submission.csv"):
     if isinstance(candidates_list_or_path, str):
-        raw_candidates = []
         print(f"Reading dataset directly from file: {candidates_list_or_path}")
         with open(candidates_list_or_path, 'r', encoding='utf-8') as f:
-            for line in f:
-                if line.strip():
-                    raw_candidates.append(json.loads(line))
+            raw_candidates = [json.loads(line) for line in f if line.strip()]
     else:
         raw_candidates = candidates_list_or_path
 
     total_input_count = len(raw_candidates)
-    print(f"Loaded {total_input_count} initial candidate entries.")
-  
+    print(f"Loaded {total_input_count} candidate records.")
+    
     s1_k = min(700, total_input_count)
-    s3_k = min(250, s1_k)
+    s3_k = min(220, s1_k)
+    final_k = min(100, s3_k)
 
     jd_text = "Senior AI Engineer Founding Team search ranking retrieval dense vector embeddings candidate matching system learning to rank hybrid search"
     
-
+   
     s1_out = step1_pipeline(raw_candidates, jd_text, top_k=s1_k)
-
+  
     embedder = SentenceTransformer("all-MiniLM-L6-v2", device="cpu")
     job_query = "ranker ranking retrieval search recommendation system embeddings dense hybrid vector ndcg mrr offline online evaluation A/B testing production engineering"
     s2_out = step2_semantic_reranking(s1_out, job_query, embedder)
-
+    
     ce_model = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2", device="cpu")
     ce_query = (
         "Hands-on AI Engineer writing production Python code for a product company startup. "
@@ -546,10 +507,9 @@ def execute_ranking_pipeline(candidates_list_or_path, output_csv_path="final_red
     )
     final_sorted = step3_cross_encoder_rerank_with_guardrails(s2_out, ce_query, ce_model, top_k=s3_k)
     
-
-    top_output_count = min(100, len(final_sorted))
-    top_100 = final_sorted[:top_output_count]
+    top_100 = final_sorted[:final_k]
     
+
     if top_100:
         fused_scores = np.array([item["final_fused_score"] for item in top_100])
         fused_mean = np.mean(fused_scores)
@@ -562,7 +522,10 @@ def execute_ranking_pipeline(candidates_list_or_path, output_csv_path="final_red
         
         for idx, item in enumerate(top_100):
             scaled_score = 0.35 + (((raw_normalized[idx] - min_norm) / norm_range) * 0.64)
-            item["bounded_final_score"] = round(float(scaled_score), 4)
+            
+           
+            unique_scaled_score = scaled_score - (idx * 0.00001)
+            item["bounded_final_score"] = round(float(unique_scaled_score), 5)
             
     print(f"Writing final submission file to {output_csv_path}...")
     with open(output_csv_path, mode='w', newline='', encoding='utf-8') as file:
@@ -570,17 +533,18 @@ def execute_ranking_pipeline(candidates_list_or_path, output_csv_path="final_red
         writer.writerow(["candidate_id", "rank", "score", "reasoning"])
         
         for index, item in enumerate(top_100):
+            current_rank = index + 1
             writer.writerow([
                 item["candidate_id"],
-                index + 1,
-                item.get("bounded_final_score", 0.0),
-                build_reasoning_string(item)
+                current_rank,
+                item["bounded_final_score"],
+                build_reasoning_string(item, current_rank) 
             ])
             
     print(f"Pipeline completed successfully. Generated {len(top_100)} evaluated candidate rows.")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="RedRob Hackathon Candidate Ranking Pipeline")
+    parser = argparse.ArgumentParser(description="RedRob Hackathon Candidate Ranking CLI Pipeline")
     parser.add_argument(
         "--candidates", 
         type=str, 
